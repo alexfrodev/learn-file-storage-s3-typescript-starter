@@ -1,10 +1,10 @@
-import path from "path";
 import { getBearerToken, validateJWT } from "../auth";
 import { respondWithJSON } from "./json";
 import { getVideo, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
+import { mediaTypeToExt, getAssetDiskPath, getAssetURL } from "./assets";
 
 const MAX_UPLOAD_SIZE = 10 << 20;
 
@@ -44,11 +44,11 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
     throw new Error("Error reading file data");
   }
 
-  const file_extension = mediaType.split("/")[1];
-  const filePath = path.join(cfg.assetsRoot, `${videoId}.${file_extension}`);
-  await Bun.write(filePath, fileData);
+  const ext = mediaTypeToExt(mediaType);
+  const assetPath = `${videoId}${ext}`;
+  await Bun.write(getAssetDiskPath(cfg, assetPath), fileData);
 
-  video.thumbnailURL = `http://localhost:${cfg.port}/assets/${videoId}.${file_extension}`;
+  video.thumbnailURL = getAssetURL(cfg, assetPath);
   updateVideo(cfg.db, video);
 
   return respondWithJSON(200, video);
