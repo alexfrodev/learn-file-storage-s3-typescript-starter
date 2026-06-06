@@ -4,8 +4,7 @@ import { getVideo, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
-import { mediaTypeToExt, getAssetDiskPath, getAssetURL } from "./assets";
-import { randomBytes } from "crypto";
+import { getAssetPath, getAssetDiskPath, getAssetURL } from "./assets";
 
 const MAX_UPLOAD_SIZE = 10 << 20;
 const ALLOWED_MEDIA_TYPES = ["image/jpeg", "image/png"];
@@ -44,15 +43,9 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   if (!ALLOWED_MEDIA_TYPES.includes(mediaType)) {
     throw new BadRequestError("File type not supported. Upload JPEG or PNG");
   }
-  const fileData = await file.arrayBuffer();
-  if (!fileData) {
-    throw new Error("Error reading file data");
-  }
-
-  const ext = mediaTypeToExt(mediaType);
-  const urlBuffer = randomBytes(32).toString("base64url");
-  const assetPath = `${urlBuffer}${ext}`;
-  await Bun.write(getAssetDiskPath(cfg, assetPath), fileData);
+  const assetPath = getAssetPath(mediaType);
+  const assetDiskPath = getAssetDiskPath(cfg, assetPath);
+  await Bun.write(assetDiskPath, file);
 
   video.thumbnailURL = getAssetURL(cfg, assetPath);
   updateVideo(cfg.db, video);
