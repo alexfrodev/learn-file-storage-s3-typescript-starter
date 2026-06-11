@@ -11,6 +11,7 @@ export type ApiConfig = {
   s3Bucket: string;
   s3Region: string;
   s3CfDistribution: string;
+  s3Client: S3Client;
   port: string;
 };
 
@@ -25,9 +26,11 @@ const s3CfDistribution = envOrThrow("S3_CF_DISTRO");
 const port = envOrThrow("PORT");
 
 const db = newDatabase(pathToDB);
+const client = s3;
 
 export const cfg: ApiConfig = {
   db: db,
+  s3Client: client,
   jwtSecret: jwtSecret,
   platform: platform,
   filepathRoot: filepathRoot,

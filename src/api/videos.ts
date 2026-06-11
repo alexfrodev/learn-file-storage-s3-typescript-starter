@@ -1,12 +1,51 @@
 import { respondWithJSON } from "./json";
 
 import { type ApiConfig } from "../config";
-import { S3Client } from "bun";
 import type { BunRequest } from "bun";
+
+import path from "path";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 import { getBearerToken, validateJWT } from "../auth";
 import { getVideo, updateVideo } from "../db/videos";
 import { getAssetDiskPath, getAssetPath } from "./assets";
+import { uploadVideoToS3 } from "../s3";
+
+async function getVideoAspectRatio(filePath: string): Promise<string> {
+  const proc = Bun.spawn(
+    [
+      "ffprobe",
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      "-of",
+      "json",
+      filePath,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+
+  const [exitCode, stdoutText, stderrText] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  if (exitCode !== 0) {
+    throw new Error(`ffprobe failed: ${stderrText}`);
+  }
+
+  const { streams } = JSON.parse(stdoutText) as {
+    streams: { width: number; height: number }[];
+  };
+  const { width, height } = streams[0];
+
+  if (width > height) return "landscape";
+  if (height > width) return "portrait";
+  return "other";
+}
 
 const MAX_UPLOAD_SIZE = 1 << 30;
 const ALLOWED_MEDIA_TYPES = ["video/mp4"];
@@ -46,23 +85,19 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     throw new BadRequestError("File type not supported. Upload MP4");
   }
 
-  const assetPath = getAssetPath(mediaType);
-  const assetDiskPath = getAssetDiskPath(cfg, assetPath);
+  const tempFilePath = path.join("/tmp", `${videoId}.mp4`);
   try {
-    await Bun.write(assetDiskPath, file);
+    await Bun.write(tempFilePath, file);
 
-    const s3 = new S3Client({
-      bucket: cfg.s3Bucket,
-      region: cfg.s3Region,
-      endpoint: `https://s3.${cfg.s3Region}.amazonaws.com`,
-    });
-    const key = `${videoId}.mp4`;
-    await s3.file(key).write(Bun.file(assetDiskPath));
+    const aspectRatio = await getVideoAspectRatio(tempFilePath);
+
+    const key = `${aspectRatio}/${videoId}.mp4`;
+    await uploadVideoToS3(cfg, key, tempFilePath, mediaType);
 
     const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
     updateVideo(cfg.db, { ...video, videoURL });
   } finally {
-    await Bun.file(assetDiskPath).unlink();
+    await Bun.file(tempFilePath).unlink();
   }
 
   return respondWithJSON(200, null);
