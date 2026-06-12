@@ -7,7 +7,6 @@ import path from "path";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 import { getBearerToken, validateJWT } from "../auth";
 import { getVideo, updateVideo } from "../db/videos";
-import { getAssetDiskPath, getAssetPath } from "./assets";
 import { uploadVideoToS3 } from "../s3";
 
 async function getVideoAspectRatio(filePath: string): Promise<string> {
@@ -45,6 +44,39 @@ async function getVideoAspectRatio(filePath: string): Promise<string> {
   if (width > height) return "landscape";
   if (height > width) return "portrait";
   return "other";
+}
+
+async function processVideoForFastStart(inputFilePath: string): Promise<string> {
+  const outputFilePath = `${inputFilePath}.processed`;
+
+  const proc = Bun.spawn(
+    [
+      "ffmpeg",
+      "-i",
+      inputFilePath,
+      "-movflags",
+      "faststart",
+      "-map_metadata",
+      "0",
+      "-codec",
+      "copy",
+      "-f",
+      "mp4",
+      outputFilePath,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+
+  const [exitCode, stderrText] = await Promise.all([
+    proc.exited,
+    new Response(proc.stderr).text(),
+  ]);
+
+  if (exitCode !== 0) {
+    throw new Error(`ffmpeg failed: ${stderrText}`);
+  }
+
+  return outputFilePath;
 }
 
 const MAX_UPLOAD_SIZE = 1 << 30;
@@ -86,18 +118,22 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   }
 
   const tempFilePath = path.join("/tmp", `${videoId}.mp4`);
+  let processedFilePath: string | undefined;
   try {
     await Bun.write(tempFilePath, file);
 
-    const aspectRatio = await getVideoAspectRatio(tempFilePath);
+    processedFilePath = await processVideoForFastStart(tempFilePath);
+
+    const aspectRatio = await getVideoAspectRatio(processedFilePath);
 
     const key = `${aspectRatio}/${videoId}.mp4`;
-    await uploadVideoToS3(cfg, key, tempFilePath, mediaType);
+    await uploadVideoToS3(cfg, key, processedFilePath, mediaType);
 
     const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
     updateVideo(cfg.db, { ...video, videoURL });
   } finally {
     await Bun.file(tempFilePath).unlink();
+    if (processedFilePath) await Bun.file(processedFilePath).unlink();
   }
 
   return respondWithJSON(200, null);
